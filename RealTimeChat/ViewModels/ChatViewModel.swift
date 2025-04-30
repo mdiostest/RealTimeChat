@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import UIKit
 
 class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
@@ -14,8 +15,11 @@ class ChatViewModel: ObservableObject {
     @Published var isConnected: Bool = true
     @Published var showAlert = false
     @Published var alertMessage = ""
+    @Published var inputText = ""
+    @Published var selectedChatId: UUID?
     
-    private var allMessages: [ChatMessage] = []  // For storing all messages
+    private var allMessages: [ChatMessage] = []
+    var chatMessages: [UUID: [ChatMessage]] = [:]
     
     init() {
         observeNetworkChanges()
@@ -23,9 +27,15 @@ class ChatViewModel: ObservableObject {
         // Handle received messages
         WebSocketManager.shared.onMessageReceived = { [weak self] text in
             DispatchQueue.main.async {
+                guard let self = self else { return }
                 let botMessage = ChatMessage(message: text, isUser: false, timestamp: Date())
-                self?.allMessages.append(botMessage)
-                self?.updateChatPreviews()
+                self.allMessages.append(botMessage)
+                
+                if let selectedId = self.selectedChatId {
+                    self.chatMessages[selectedId, default: []].append(botMessage)
+                    self.messages = self.chatMessages[selectedId] ?? []
+                }
+                self.updateChatPreviews()
             }
         }
         
@@ -42,12 +52,45 @@ class ChatViewModel: ObservableObject {
         
         // Connect to the websocket server
         WebSocketManager.shared.connect()
+        
+        // Clear chats when app is closed
+        NotificationCenter.default.addObserver(self, selector: #selector(clearChats), name: UIApplication.willTerminateNotification, object: nil)
+    }
+    
+    @objc private func clearChats() {
+        allMessages.removeAll()
+        messages.removeAll()
+        chatPreviews.removeAll()
+        chatMessages.removeAll()
+        selectedChatId = nil
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    func createNewChat() -> UUID {
+        let newChatId = UUID()
+        chatMessages[newChatId] = []
+        selectedChatId = newChatId
+        updateChatPreviews()
+        return newChatId
+    }
+    
+    func selectChat(_ chatId: UUID) {
+        selectedChatId = chatId
+        messages = chatMessages[chatId] ?? []
+        updateChatPreviews()
     }
     
     func sendMessage(_ text: String) {
+        guard let chatId = selectedChatId, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
         let userMessage = ChatMessage(message: text, isUser: true, timestamp: Date())
         allMessages.append(userMessage)
-        messages.append(userMessage)
+        chatMessages[chatId, default: []].append(userMessage)
+        messages = chatMessages[chatId] ?? []
+        
         WebSocketManager.shared.send(message: text)
         updateChatPreviews()
     }
@@ -55,20 +98,19 @@ class ChatViewModel: ObservableObject {
     func updateChatPreviews() {
         var previews: [ChatPreview] = []
         
-        // Group messages by user (this can be adjusted as per your data structure)
-        let groupedMessages = Dictionary(grouping: allMessages) { $0.isUser }
-        
-        // Create chat previews with the latest message and unread status
-        for (isUser, messages) in groupedMessages {
-            let latestMessage = messages.last!
-            let preview = ChatPreview(userName: isUser ? "You" : "Bot",
-                                      lastMessage: latestMessage.message,
-                                      timestamp: latestMessage.timestamp,
-                                      hasUnreadMessages: !latestMessage.read)
+        for (chatId, messages) in chatMessages {
+            let previewMessage = messages.last?.message ?? "No messages"
+            let preview = ChatPreview(
+                id: chatId,
+                userName: "Chat \(chatId.uuidString.prefix(4))",
+                lastMessage: previewMessage,
+                timestamp: messages.last?.timestamp ?? Date(),
+                hasUnreadMessages: messages.contains { !$0.read }
+            )
             previews.append(preview)
         }
         
-        self.chatPreviews = previews
+        self.chatPreviews = previews.sorted { $0.timestamp > $1.timestamp }
     }
     
     func observeNetworkChanges() {

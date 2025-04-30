@@ -6,8 +6,9 @@
 //
 
 import Foundation
+
 struct ChatPreview: Identifiable {
-    let id: UUID = UUID()
+    let id: UUID
     let userName: String
     let lastMessage: String
     let timestamp: Date
