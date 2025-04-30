@@ -29,11 +29,20 @@ class ChatViewModel: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let botMessage = ChatMessage(message: text, isUser: false, timestamp: Date())
-                self.allMessages.append(botMessage)
                 
-                if let selectedId = self.selectedChatId {
-                    self.chatMessages[selectedId, default: []].append(botMessage)
-                    self.messages = self.chatMessages[selectedId] ?? []
+                // Find the last user message and its chat
+                if let lastUserMessage = self.allMessages.last(where: { $0.isUser }) {
+                    for (chatId, messages) in self.chatMessages {
+                        if messages.contains(where: { $0.id == lastUserMessage.id }) {
+                            // Add bot message to the correct chat
+                            self.chatMessages[chatId, default: []].append(botMessage)
+                            // Only update the messages array if this is the selected chat
+                            if chatId == self.selectedChatId {
+                                self.messages = self.chatMessages[chatId] ?? []
+                            }
+                            break
+                        }
+                    }
                 }
                 self.updateChatPreviews()
             }
@@ -73,13 +82,23 @@ class ChatViewModel: ObservableObject {
         let newChatId = UUID()
         chatMessages[newChatId] = []
         selectedChatId = newChatId
+        // Clear the current messages when creating a new chat
+        messages = []
         updateChatPreviews()
         return newChatId
     }
     
     func selectChat(_ chatId: UUID) {
         selectedChatId = chatId
+        // Only update messages for the selected chat
         messages = chatMessages[chatId] ?? []
+        // Mark messages as read when selecting a chat
+        if var chatMessages = chatMessages[chatId] {
+            for i in 0..<chatMessages.count {
+                chatMessages[i].read = true
+            }
+            self.chatMessages[chatId] = chatMessages
+        }
         updateChatPreviews()
     }
     
@@ -87,11 +106,34 @@ class ChatViewModel: ObservableObject {
         guard let chatId = selectedChatId, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
         let userMessage = ChatMessage(message: text, isUser: true, timestamp: Date())
+        // Add to both allMessages and the specific chat
         allMessages.append(userMessage)
         chatMessages[chatId, default: []].append(userMessage)
-        messages = chatMessages[chatId] ?? []
+        // Only update messages for the current chat
+        if chatId == selectedChatId {
+            messages = chatMessages[chatId] ?? []
+        }
         
-        WebSocketManager.shared.send(message: text)
+        // Store the current chat ID before sending the message
+        let currentChatId = chatId
+        WebSocketManager.shared.send(message: text) { [weak self] success in
+            if !success {
+                // If message sending fails, remove it from both collections
+                DispatchQueue.main.async {
+                    if let index = self?.chatMessages[currentChatId]?.firstIndex(where: { $0.id == userMessage.id }) {
+                        self?.chatMessages[currentChatId]?.remove(at: index)
+                        if currentChatId == self?.selectedChatId {
+                            self?.messages = self?.chatMessages[currentChatId] ?? []
+                        }
+                        // Also remove from allMessages
+                        if let allIndex = self?.allMessages.firstIndex(where: { $0.id == userMessage.id }) {
+                            self?.allMessages.remove(at: allIndex)
+                        }
+                        self?.updateChatPreviews()
+                    }
+                }
+            }
+        }
         updateChatPreviews()
     }
 

@@ -84,7 +84,7 @@ class WebSocketManager: NSObject, ObservableObject {
         connect()
     }
     
-    func send(message: String) {
+    func send(message: String, completion: ((Bool) -> Void)? = nil) {
         if isConnected {
             let messageToSend = URLSessionWebSocketTask.Message.string(message)
             webSocketTask?.send(messageToSend) { [weak self] error in
@@ -92,16 +92,20 @@ class WebSocketManager: NSObject, ObservableObject {
                     print("❌ Error sending message: \(error.localizedDescription)")
                     self?.connectionError = "Failed to send message: \(error.localizedDescription)"
                     self?.messageQueue.append(message)
+                    completion?(false)
                     
                     // If on primary server and send fails, try fallback
                     if !(self?.isUsingFallbackServer ?? true) {
                         self?.switchToFallbackServer()
                     }
+                } else {
+                    completion?(true)
                 }
             }
         } else {
             print("📦 Queueing message for later: \(message)")
             messageQueue.append(message)
+            completion?(false)
         }
     }
     

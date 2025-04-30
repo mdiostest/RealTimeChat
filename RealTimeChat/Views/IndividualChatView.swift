@@ -16,7 +16,7 @@ struct IndividualChatView: View {
             // Chat messages
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(viewModel.messages) { message in
+                    ForEach(viewModel.chatMessages[chatId] ?? []) { message in
                         MessageBubble(message: message)
                     }
                 }
@@ -41,6 +41,9 @@ struct IndividualChatView: View {
             .padding()
         }
         .navigationBarTitle("Chat", displayMode: .inline)
+        .onAppear {
+            viewModel.selectChat(chatId)
+        }
     }
 }
 
