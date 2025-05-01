@@ -17,6 +17,7 @@ class ChatViewModel: ObservableObject {
     @Published var alertMessage = ""
     @Published var inputText = ""
     @Published var selectedChatId: UUID?
+    private var offlineMessageQueue: [ChatMessage] = []
     
     private var allMessages: [ChatMessage] = []
     var chatMessages: [UUID: [ChatMessage]] = [:]
@@ -102,38 +103,73 @@ class ChatViewModel: ObservableObject {
         updateChatPreviews()
     }
     
+//    func sendMessage(_ text: String) {
+//        guard let chatId = selectedChatId, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+//        
+//        let userMessage = ChatMessage(message: text, isUser: true, timestamp: Date())
+//        // Add to both allMessages and the specific chat
+//        allMessages.append(userMessage)
+//        chatMessages[chatId, default: []].append(userMessage)
+//        // Only update messages for the current chat
+//        if chatId == selectedChatId {
+//            messages = chatMessages[chatId] ?? []
+//        }
+//        
+//        // Store the current chat ID before sending the message
+//        let currentChatId = chatId
+//        WebSocketManager.shared.send(message: text) { [weak self] success in
+//            if !success {
+//                // If message sending fails, remove it from both collections
+//                DispatchQueue.main.async {
+//                    if let index = self?.chatMessages[currentChatId]?.firstIndex(where: { $0.id == userMessage.id }) {
+//                        self?.chatMessages[currentChatId]?.remove(at: index)
+//                        if currentChatId == self?.selectedChatId {
+//                            self?.messages = self?.chatMessages[currentChatId] ?? []
+//                        }
+//                        // Also remove from allMessages
+//                        if let allIndex = self?.allMessages.firstIndex(where: { $0.id == userMessage.id }) {
+//                            self?.allMessages.remove(at: allIndex)
+//                        }
+//                        self?.updateChatPreviews()
+//                    }
+//                }
+//            }
+//        }
+//        updateChatPreviews()
+//    }
+//    
+    
+    // In ChatViewModel.swift
     func sendMessage(_ text: String) {
         guard let chatId = selectedChatId, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         
-        let userMessage = ChatMessage(message: text, isUser: true, timestamp: Date())
+        let userMessage = ChatMessage(message: text, isUser: true, timestamp: Date(), status: .sending)
+        
         // Add to both allMessages and the specific chat
         allMessages.append(userMessage)
         chatMessages[chatId, default: []].append(userMessage)
-        // Only update messages for the current chat
-        if chatId == selectedChatId {
-            messages = chatMessages[chatId] ?? []
-        }
+        messages = chatMessages[chatId] ?? []
         
-        // Store the current chat ID before sending the message
-        let currentChatId = chatId
-        WebSocketManager.shared.send(message: text) { [weak self] success in
-            if !success {
-                // If message sending fails, remove it from both collections
+        if isConnected {
+            WebSocketManager.shared.send(message: text) { [weak self] success in
                 DispatchQueue.main.async {
-                    if let index = self?.chatMessages[currentChatId]?.firstIndex(where: { $0.id == userMessage.id }) {
-                        self?.chatMessages[currentChatId]?.remove(at: index)
-                        if currentChatId == self?.selectedChatId {
-                            self?.messages = self?.chatMessages[currentChatId] ?? []
-                        }
-                        // Also remove from allMessages
-                        if let allIndex = self?.allMessages.firstIndex(where: { $0.id == userMessage.id }) {
-                            self?.allMessages.remove(at: allIndex)
-                        }
-                        self?.updateChatPreviews()
+                    guard let self = self else { return }
+                    
+                    // Update the message status
+                    if let index = self.messages.firstIndex(where: { $0.id == userMessage.id }) {
+                        self.messages[index].status = success ? .sent : .failed
+                        self.chatMessages[chatId]?[index].status = success ? .sent : .failed
+                    }
+                    
+                    if !success {
+                        self.queueOfflineMessage(userMessage)
                     }
                 }
             }
+        } else {
+            queueOfflineMessage(userMessage)
         }
+        
         updateChatPreviews()
     }
 
@@ -155,15 +191,40 @@ class ChatViewModel: ObservableObject {
         self.chatPreviews = previews.sorted { $0.timestamp > $1.timestamp }
     }
     
+    
     func observeNetworkChanges() {
         NetworkMonitor.shared.onStatusChange = { [weak self] isConnected in
             DispatchQueue.main.async {
                 self?.isConnected = isConnected
+                if isConnected {
+                    self?.retryOfflineMessages()
+                }
             }
         }
     }
 
+  
+    
+    func queueOfflineMessage(_ message: ChatMessage) {
+        guard let chatId = selectedChatId else { return }
+        
+        // Add to both the offline queue and display immediately
+        offlineMessageQueue.append(message)
+        chatMessages[chatId, default: []].append(message)
+        messages = chatMessages[chatId] ?? []
+        updateChatPreviews()
+    }
+
+    func retryOfflineMessages() {
+        guard isConnected, !offlineMessageQueue.isEmpty else { return }
+        
+        for message in offlineMessageQueue {
+            sendMessage(message.message)
+        }
+    }
+    
     func startMonitoringNetwork() {
         NetworkMonitor.shared.start()
     }
+    
 }

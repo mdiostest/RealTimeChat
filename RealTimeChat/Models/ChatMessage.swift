@@ -7,10 +7,18 @@
 
 import Foundation
 
+enum MessageStatus {
+    case sending
+    case sent
+    case delivered
+    case failed
+}
+
 struct ChatMessage: Identifiable {
     let id = UUID()
     let message: String
     let isUser: Bool
     let timestamp: Date
-    var read: Bool = false  // Track if the message is read or not
+    var read: Bool = false
+    var status: MessageStatus = .sent // Add this line
 }

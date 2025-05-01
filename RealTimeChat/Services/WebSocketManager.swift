@@ -25,6 +25,7 @@ class WebSocketManager: NSObject, ObservableObject {
     private var reconnectTimer: Timer?
     private let reconnectInterval: TimeInterval = 5
     private var isUsingFallbackServer = false
+    private var pendingMessages: [UUID: (String, (Bool) -> Void)] = [:]
     
     private let primaryServer = "wss://piehost.com/websocket-tester"
     private let fallbackServer = "wss://ws.postman-echo.com/raw"
@@ -85,21 +86,25 @@ class WebSocketManager: NSObject, ObservableObject {
     }
     
     func send(message: String, completion: ((Bool) -> Void)? = nil) {
+        let messageId = UUID()
+        
         if isConnected {
+            pendingMessages[messageId] = (message, completion ?? { _ in })
+            
             let messageToSend = URLSessionWebSocketTask.Message.string(message)
             webSocketTask?.send(messageToSend) { [weak self] error in
-                if let error = error {
-                    print("❌ Error sending message: \(error.localizedDescription)")
-                    self?.connectionError = "Failed to send message: \(error.localizedDescription)"
-                    self?.messageQueue.append(message)
-                    completion?(false)
-                    
-                    // If on primary server and send fails, try fallback
-                    if !(self?.isUsingFallbackServer ?? true) {
-                        self?.switchToFallbackServer()
+                DispatchQueue.main.async {
+                    if let error = error {
+                        print("❌ Error sending message: \(error.localizedDescription)")
+                        self?.pendingMessages.removeValue(forKey: messageId)
+                        completion?(false)
+                        
+                        if !(self?.isUsingFallbackServer ?? true) {
+                            self?.switchToFallbackServer()
+                        }
+                    } else {
+                        completion?(true)
                     }
-                } else {
-                    completion?(true)
                 }
             }
         } else {
@@ -114,30 +119,33 @@ class WebSocketManager: NSObject, ObservableObject {
             switch result {
             case .failure(let error):
                 print("❌ Error receiving message: \(error.localizedDescription)")
-                self?.connectionError = "Failed to receive message: \(error.localizedDescription)"
-                
-                // If on primary server and receive fails, try fallback
-                if !(self?.isUsingFallbackServer ?? true) {
-                    self?.switchToFallbackServer()
-                } else {
-                    self?.disconnect()
-                }
                 
             case .success(let message):
                 switch message {
                 case .string(let text):
                     print("📥 Received message: \(text)")
                     self?.onMessageReceived?(text)
+                    
+                    // Handle pending message completions
+                    if let pending = self?.pendingMessages.first(where: { _, value in
+                        text.contains(value.0) // Simple matching
+                    }) {
+                        // Get the completion handler and remove from pending
+                        let completion = pending.value.1
+                        self?.pendingMessages.removeValue(forKey: pending.key)
+                        completion(true)
+                    }
+                    
                 default:
-                    print("⚠️ Received unexpected message type")
+                    print("⚠️ Received non-string message")
+                    break
                 }
-                
-                // Continue listening for new messages
                 self?.listenForMessages()
             }
         }
     }
     
+
     private func sendPing() {
         webSocketTask?.sendPing { [weak self] error in
             if let error = error {
@@ -166,6 +174,7 @@ class WebSocketManager: NSObject, ObservableObject {
 }
 
 extension WebSocketManager: URLSessionWebSocketDelegate {
+
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                      didOpenWithProtocol protocol: String?) {
         print("✅ WebSocket connected successfully to \(isUsingFallbackServer ? "fallback" : "primary") server")
